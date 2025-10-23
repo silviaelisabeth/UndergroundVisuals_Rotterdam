@@ -1,0 +1,11 @@
+.env/
+env/
+.venv/
+.DS_Store
+*.png
+.idea/
+.local_data/
+*.csv
+*.json
+*.pdf
+*.webloc
