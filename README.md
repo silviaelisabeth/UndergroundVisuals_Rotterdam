@@ -1,6 +1,6 @@
 # UndergroundVisuals Rotterdam
 
-UndergroundVisuals Rotterdam is a project for a non-profit organization organizing a citizen assembly on sustainable urban planning in Rotterdam.
+This is a project for a non-profit organization organizing a citizen assembly on sustainable urban planning in Rotterdam.
 The goal is to develop a web application that enables citizens to search for any address in the city and visualize both the surface view and geological layers beneath it.
 
 ![License: CC BY‑NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)
@@ -17,15 +17,23 @@ The [Jupyter Notebook](dev_layer_plot.ipynb) demonstrates how to:
    - RD (Rijksdriehoeksmeting) coordinates
 2. Retrieve and process GeoTOP subsurface data from BRO.
    - Data used focuses on South Holland, further restricted to central Rotterdam.
-3. Identify the closest geological data point to the address.
-4. Define a bounding box around this location.
-5. Extract and visualize relevant 3D geological profiles for that area.
+3. Display the vertical distribution of lithology classes within the selected region, giving insight into the composition of soils and sediments under Rotterdam.
+4. Identify the closest geological data point to the address.
+5. Define a bounding box around this location.
+6. Extract and visualize relevant 3D geological profiles for that area.
 
-Example 3D visualization:
+Example 3D Visualization:
 <img width="5682" height="4740" alt="3D_geological_profiles_box_for_91978_436543" src="https://github.com/user-attachments/assets/093c62d3-f0f2-4e28-8786-8692a849f81c" />
+
+Vertical Distribution of Lithology Classes within the City of Rotterdam:
+| Vertical Distribution of Lithoclasses | Lithoclass Distribution Per Depth |
+|---------|---------|
+| <img width="790" height="990" alt="VerticalDistributionLithoClasses" src="https://github.com/user-attachments/assets/53983c6c-b854-4e90-aa93-b92e07f5deeb" width="50" /> | <img width="465" height="790" alt="LithoClassesDistributionPerDepth_DensityPlot" src="https://github.com/user-attachments/assets/550f4bb4-7b19-49a2-9db4-fddd2fe256dd" width="150"/>
+</div> |
 
 ## Web Application Integration
 For integration with the web platform (built with JavaScript), processed geological data is batched and exported as JSON files, each with a maximum size of 5 MB for efficient loading and display.
+
 
 ## Summary
 This project bridges citizen participation and geospatial science, offering an interactive way to explore Rotterdam’s underground and support sustainable urban planning discussions.
