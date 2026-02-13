@@ -28,7 +28,7 @@ Example 3D Visualization:
 Vertical Distribution of Lithology Classes within the City of Rotterdam:
 | Vertical Distribution of Lithoclasses | Lithoclass Distribution Per Depth |
 |---------|---------|
-| <img width="790" height="990" alt="VerticalDistributionLithoClasses" src="https://github.com/user-attachments/assets/53983c6c-b854-4e90-aa93-b92e07f5deeb" width="50" /> | <img width="818" height="699" alt="LithoClassesDistributionPerDepth" src="https://github.com/user-attachments/assets/7bec3da7-7cdf-4d66-a795-fe1e5e1b6a35" width="10" />
+| <img width="790" height="990" alt="VerticalDistributionLithoClasses" src="https://github.com/user-attachments/assets/53983c6c-b854-4e90-aa93-b92e07f5deeb" width="50" /> | <img width="465" height="790" alt="LithoClassesDistributionPerDepth_DensityPlot" src="https://github.com/user-attachments/assets/550f4bb4-7b19-49a2-9db4-fddd2fe256dd" width="150"/>
 </div> |
 
 ## Web Application Integration
