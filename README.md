@@ -3,6 +3,10 @@
 UndergroundVisuals Rotterdam is a project for a non-profit organization organizing a citizen assembly on sustainable urban planning in Rotterdam.
 The goal is to develop a web application that enables citizens to search for any address in the city and visualize both the surface view and geological layers beneath it.
 
+![License: CC BY‑NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)
+
+---
+
 ## Data Source
 All geological data is sourced from the **Basic Registration of Subsurface Data (BRO)**, maintained by the [Dutch Ministry of Housing and Spatial Planning](https://basisregistratieondergrond.nl).
 
@@ -25,3 +29,9 @@ For integration with the web platform (built with JavaScript), processed geologi
 
 ## Summary
 This project bridges citizen participation and geospatial science, offering an interactive way to explore Rotterdam’s underground and support sustainable urban planning discussions.
+
+---
+
+# License
+
+This project/repo is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/).
