@@ -6,10 +6,15 @@ from datetime import datetime
 from glob import glob
 
 import geopandas as gpd
+import pyarrow.dataset as ds
 import requests
-from numpy import (any, full, isnan, nan_to_num, round, sort, unique, where,
-                   zeros, zeros_like)
+from joblib import Parallel, delayed
+from numpy import (abs, any, argmax, array, full, isnan, nan_to_num, round,
+                   sort, stack, unique, where, zeros, zeros_like)
 from pandas import DataFrame, concat, read_csv
+from shapely.geometry import Point
+from shapely.strtree import STRtree
+from tqdm import tqdm
 
 import functions as ft
 
@@ -71,8 +76,10 @@ def load_geotop_data(dir_geotop):
 
 
 def get_rotterdam_coordinates(data):
-    url = ("https://service.pdok.nl/cbs/gebiedsindelingen/2025/wfs/v1_0?"
-           "request=GetFeature&service=WFS&version=2.0.0&typeName=gemeente_gegeneraliseerd&outputFormat=json")
+    url = (
+        "https://service.pdok.nl/cbs/gebiedsindelingen/2025/wfs/v1_0?"
+        "request=GetFeature&service=WFS&version=2.0.0&typeName=gemeente_gegeneraliseerd&outputFormat=json"
+        )
     municipalities = gpd.read_file(url)
     rotterdam = municipalities[municipalities["statnaam"] == "Rotterdam"]
     rotterdam_rd = rotterdam.to_crs(epsg=projection_rd_amersfoort.split('epsg:')[1])
@@ -82,7 +89,7 @@ def get_rotterdam_coordinates(data):
         geometry=gpd.points_from_xy(data.reset_index().x, data.reset_index().y), 
         crs=projection_rd_amersfoort
     )
-    points_in_rotterdam = gdf_points[gdf_points.geometry.within(rotterdam_rd.unary_union)]
+    points_in_rotterdam = gdf_points[gdf_points.geometry.within(rotterdam_rd.union_all())]
     print(f"Data points available within Rotterdam {points_in_rotterdam.shape}")
     return points_in_rotterdam
 
@@ -192,7 +199,6 @@ def fill_lithoklasse_3d_vectorized(
         if orig_val == 0 and new_val != 0:
             df.at[ridx, "estimated"] = True
 
-    # remove helper columns if exist
     for c in ["_gx","_gy","_gz"]:
         if c in df:
             df.drop(columns=[c], inplace=True)
@@ -200,37 +206,253 @@ def fill_lithoklasse_3d_vectorized(
     return df
 
 
-# --------------------------------------------------------------------------
-# MAIN
-# --------------------------------------------------------------------------
-def main(args):
-    user_input_address = args.input_address
-    method_filling = args.method if args.method else 'mean_round'
+def fill_lithoklasse_3d_sparse(
+    df: DataFrame,
+    z_col: str = "z",
+    litho_col: str = "lithoklasse",
+    method: str = "mean_round",
+    delta: float = 0.0005
+) -> DataFrame:
+    """
+    Memory-efficient 3D bottom-to-top filling of lithoklasse==0.
+    For each zero layer, looks at the layer immediately below
+    in the 3x3 neighborhood (lon/lat ± delta) and fills using
+    mean or mode of non-zero neighbors.
+    
+    Parameters:
+        df: DataFrame with columns ['lon', 'lat', z_col, litho_col']
+        z_col: column representing depth
+        litho_col: column representing lithoklasse
+        method: "mean_round" or "mode"
+        delta: search radius in lon/lat for neighbors
+    Returns:
+        DataFrame with filled lithoklasse and estimated flag
+    """
+    
+    df = df.copy()
+    df["estimated"] = False
+    
+    coord_dict = {}
+    for idx, row in df.iterrows():
+        coord_dict[(row['lon'], row['lat'], row[z_col])] = idx
+    
+    for (lon, lat), group in df.groupby(['lon','lat']):
+        group_sorted = group.sort_values(z_col)
+        zs = group_sorted[z_col].values
+        for i in range(1, len(zs)):
+            idx_curr = coord_dict[(lon, lat, zs[i])]
+            if df.at[idx_curr, litho_col] == 0:
+                
+                z_below = zs[i-1]
+                neighbor_mask = (
+                    (df[z_col] == z_below) &
+                    (df['lon'].between(lon - delta, lon + delta)) &
+                    (df['lat'].between(lat - delta, lat + delta)) &
+                    (df[litho_col] != 0)
+                )
+                neighbors = df.loc[neighbor_mask, litho_col].values
+                
+                if len(neighbors) == 0:
+                    continue 
+                
+                if method == "mean_round":
+                    fill_val = int(round(neighbors.mean()))
+                elif method == "mode":
+                    cnt = Counter(neighbors)
+                    max_count = max(cnt.values())
+                    candidates = [v for v,c in cnt.items() if c==max_count]
+                    fill_val = int(min(candidates))
+                else:
+                    raise ValueError(f"Unknown method '{method}'")
+                
+                df.at[idx_curr, litho_col] = fill_val
+                df.at[idx_curr, "estimated"] = True
+                
+    return df
 
-    if not user_input_address:
-        latitude, longitude = 51.9139529, 4.4711320
-        print(f"No user input defined; fallback to default: {latitude}, {longitude}")
-    else:
-        latitude, longitude = get_coordinates_to_address(user_input_address)
 
-    data = load_geotop_data(dir_geotop='input/GeoTOP_v01r6s1_csv_bestanden/')
-    points_in_rotterdam = get_rotterdam_coordinates(data)
-    points_in_rotterdam = ft.convert_rd_into_geocoordinates(points_in_rotterdam)
-    points_in_rotterdam = points_in_rotterdam.reset_index()
+def fill_lithoklasse_fast(df, z_col='z', litho_col='lithoklasse', delta=0.0005, method='mean_round'):
+    df = df.sort_values(['lon','lat',z_col]).copy()
+    df['estimated'] = False
 
-    points_in_rotterdam['lon'] = points_in_rotterdam.geometry.x
-    points_in_rotterdam['lat'] = points_in_rotterdam.geometry.y
+    lons = df['lon'].values
+    lats = df['lat'].values
+    zs = df[z_col].values
+    litho = df[litho_col].values
 
-    points_in_rotterdam['group'] = (
-        (points_in_rotterdam['lithoklasse'] != points_in_rotterdam['lithoklasse'].shift()) |
-        (points_in_rotterdam['lon'] != points_in_rotterdam['lon'].shift()) |
-        (points_in_rotterdam['lat'] != points_in_rotterdam['lat'].shift())
-    ).cumsum()
+    n = len(df)
 
-    print("Filling lithoklasse==0 values bottom-to-top...")
-    filled = fill_lithoklasse_3d_vectorized(points_in_rotterdam, method=method_filling)
-    print("Lithoklasse filling complete.")
+    for i in tqdm(range(1, n), desc="Filling lithoklasse"):
+        if lons[i] == lons[i-1] and lats[i] == lats[i-1]:
+            
+            if litho[i] == 0:
+                z_below = zs[i-1]
 
+                mask = (
+                    (zs == z_below) &
+                    (abs(lons - lons[i]) <= delta) &
+                    (abs(lats - lats[i]) <= delta) &
+                    (litho != 0)
+                )
+
+                neighbors = litho[mask]
+
+                if neighbors.size == 0:
+                    continue
+
+                if method == "mean_round":
+                    fill_val = int(round(neighbors.mean()))
+                else:
+                    vals, counts = unique(neighbors, return_counts=True)
+                    fill_val = vals[argmax(counts)]
+
+                litho[i] = fill_val
+                df.at[df.index[i], 'estimated'] = True
+
+    df[litho_col] = litho
+    return df
+
+
+def fill_lithoklasse_numpy(df, z_col='z', litho_col='lithoklasse', delta=0.0005, method='mean_round'):
+    """
+    Vectorized, bottom-to-top filling of lithoklasse==0 per column.
+    Pure NumPy, no Numba. Maintains your original logic.
+    
+    Parameters:
+        df: pandas DataFrame with ['lon', 'lat', z_col, litho_col']
+        z_col: column representing depth
+        litho_col: column representing lithoklasse
+        delta: search radius in lon/lat for neighbor averaging
+        method: "mean_round" or "mode"
+        
+    Returns:
+        df: same DataFrame with filled lithoklasse and 'estimated' flag
+    """
+
+    df = df.sort_values(['lon', 'lat', z_col]).copy()
+    df['estimated'] = False
+
+    lons = df['lon'].values
+    lats = df['lat'].values
+    zs = df[z_col].values
+    litho = df[litho_col].values
+    n = len(df)
+
+    coords = stack([lons, lats, zs], axis=1)
+    unique_cols, inverse_idx = unique(stack([lons, lats], axis=1), axis=0, return_inverse=True)
+
+    for col_idx, (lon_val, lat_val) in enumerate(unique_cols):
+        col_mask = (inverse_idx == col_idx)
+        idxs = where(col_mask)[0]
+        zs_col = zs[idxs]
+        litho_col = litho[idxs]
+
+        for i in range(1, len(idxs)):
+            idx_curr = idxs[i]
+            if litho[idx_curr] == 0:
+                z_below = zs[idxs[i-1]]
+
+                neighbor_mask = (
+                    (zs == z_below) &
+                    (abs(lons - lon_val) <= delta) &
+                    (abs(lats - lat_val) <= delta) &
+                    (litho != 0)
+                )
+                neighbors = litho[neighbor_mask]
+
+                if neighbors.size == 0:
+                    continue
+
+                if method == "mean_round":
+                    fill_val = int(round(neighbors.mean()))
+                elif method == "mode":
+                    vals, counts = unique(neighbors, return_counts=True)
+                    fill_val = vals[argmax(counts)]
+                else:
+                    raise ValueError(f"Unknown method '{method}'")
+
+                litho[idx_curr] = fill_val
+                df.at[df.index[idx_curr], 'estimated'] = True
+
+    df[litho_col] = litho
+    return df
+
+
+def fill_lithoklasse_numpy_fast(
+    df,
+    z_col='z',
+    litho_col='lithoklasse',
+    delta=0.0005,
+    method='mean_round',
+    show_progress=True
+):
+    """
+    Optimized bottom-to-top filling of lithoklasse==0 per column.
+    Much faster than naive neighbor scanning.
+    """
+
+    df = df.sort_values(['lon', 'lat', z_col]).copy()
+    df['estimated'] = False
+
+    lons = df['lon'].to_numpy()
+    lats = df['lat'].to_numpy()
+    zs = df[z_col].to_numpy()
+    litho = df[litho_col].to_numpy()
+
+    unique_z, z_inverse = unique(zs, return_inverse=True)
+    z_groups = {i: where(z_inverse == i)[0] for i in range(len(unique_z))}
+
+    coords_xy = stack([lons, lats], axis=1)
+    unique_cols, col_inverse = unique(coords_xy, axis=0, return_inverse=True)
+
+    total_cols = len(unique_cols)
+    iterator = range(total_cols)
+    if show_progress:
+        iterator = tqdm(iterator, desc="Filling columns")
+
+    for col_idx in iterator:
+        idxs = where(col_inverse == col_idx)[0]
+
+        for i in range(1, len(idxs)):
+            idx_curr = idxs[i]
+
+            if litho[idx_curr] != 0:
+                continue
+
+            z_below = zs[idxs[i - 1]]
+            z_group_idx = where(unique_z == z_below)[0][0]
+            layer_indices = z_groups[z_group_idx]
+
+            dx = abs(lons[layer_indices] - lons[idx_curr])
+            dy = abs(lats[layer_indices] - lats[idx_curr])
+
+            neighbor_mask = (
+                (dx <= delta) &
+                (dy <= delta) &
+                (litho[layer_indices] != 0)
+            )
+
+            neighbors = litho[layer_indices][neighbor_mask]
+
+            if neighbors.size == 0:
+                continue
+
+            if method == "mean_round":
+                fill_val = int(round(neighbors.mean()))
+            elif method == "mode":
+                vals, counts = unique(neighbors, return_counts=True)
+                fill_val = vals[argmax(counts)]
+            else:
+                raise ValueError(f"Unknown method '{method}'")
+
+            litho[idx_curr] = fill_val
+            df.iloc[idx_curr, df.columns.get_loc('estimated')] = True
+
+    df[litho_col] = litho
+    return df
+
+
+def aggregate_to_same_class(filled):
     likelihood_cols = [col for col in filled.columns if col.startswith('kans_')]
     agg_dict = {
         'lon': 'first',
@@ -247,15 +469,15 @@ def main(args):
     df_grouped = df_grouped.rename(columns={
         'lon_first':'lon',
         'lat_first':'lat',
-        'lithoklasse_first':'lithoklasse',
+        'lithoklasse_first':'lithoklasse_id',
         'lithostrat_first':'lithostrat',
         'z_min':'z_bottom',
         'z_max':'z_top'
     }).reset_index(drop=True)
+    
     df_grouped['estimated'] = filled.groupby('group')['estimated'].max().values
-
-    df_grouped['lithoklasse_material'] = df_grouped['lithoklasse'].map(map_lithoclasses)
-    df_grouped['lithoklasse_color'] = df_grouped['lithoklasse_material'].map(material_color_mapping)
+    df_grouped['lithoklasse'] = df_grouped['lithoklasse_id'].map(map_lithoclasses)
+    df_grouped['lithoklasse_color'] = df_grouped['lithoklasse'].map(material_color_mapping)
 
     for col in likelihood_cols:
         mean_col = f"{col}_mean"
@@ -263,17 +485,20 @@ def main(args):
             df_grouped[mean_col] = df_grouped[mean_col].round(4)
 
     selected_columns = [
-        'lon', 'lat', 'z_top', 'z_bottom', 'lithoklasse', 'lithoklasse_material',
-        *[f"{col}_mean" for col in likelihood_cols],
-        'estimated'
+        'lon', 'lat', 'z_top', 'z_bottom', 'lithoklasse_id', 'lithoklasse',
+        *[f"{col}_mean" for col in likelihood_cols], 'estimated'
     ]
     df_final = df_grouped[selected_columns]
-
+    
     profiled = df_final.groupby(['lon','lat']).apply(
         lambda g: sorted(g.to_dict(orient='records'), key=lambda d: d['z_top'], reverse=True)
     ).reset_index(name='data')
+    return profiled
 
+
+def saving_batches(profiled, dir_export):
     list_of_lists = profiled['data'].tolist()
+    
     output_dir = os.path.join(dir_export, f"json_5MB_chunks_{datetime.now().date().isoformat()}/")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -297,7 +522,54 @@ def main(args):
         with open(file_name, 'w') as f:
             json.dump(batch, f, separators=(',', ':'))
 
-    profiled[['lon','lat','batchID']].to_csv(os.path.join(output_dir,'map_coordinates2batch.txt'), index=False)
+    #profiled[['lon','lat','batchID']].to_csv(os.path.join(output_dir,'map_coordinates2batch.txt'), index=False)
+    batch_summary = profiled.groupby('batchID').agg({
+        'lon': ['min', 'max'],
+        'lat': ['min', 'max']
+    })
+
+    batch_summary.columns = ['minLon', 'maxLon', 'minLat', 'maxLat']
+    batch_summary = batch_summary.reset_index()
+
+    batch_summary_dict = batch_summary.set_index('batchID').to_dict(orient='index')
+
+    batch_summary_file = os.path.join(output_dir, 'map_batch_bboxes.json')
+    with open(batch_summary_file, 'w') as f:
+        json.dump(batch_summary_dict, f, indent=2)
+
+    print(f"Batch bounding boxes saved as {batch_summary_file}")
+    return output_dir
+
+
+# --------------------------------------------------------------------------
+# MAIN
+# --------------------------------------------------------------------------
+def main(args):
+    method_filling = args.method if args.method else 'mean_round'
+    print('Loading geotop data...')
+    data = load_geotop_data(dir_geotop='input/GeoTOP_v01r6s1_csv_bestanden/')
+    
+    print('Crop data to the city of Rotterdam...')
+    points_in_rotterdam = get_rotterdam_coordinates(data)
+    points_in_rotterdam = ft.convert_rd_into_geocoordinates(points_in_rotterdam)
+    points_in_rotterdam = points_in_rotterdam.reset_index()
+    
+    points_in_rotterdam['group'] = (
+        (points_in_rotterdam['lithoklasse'] != points_in_rotterdam['lithoklasse'].shift()) |
+        (points_in_rotterdam['lon'] != points_in_rotterdam['lon'].shift()) |
+        (points_in_rotterdam['lat'] != points_in_rotterdam['lat'].shift())
+    ).cumsum()
+
+    print("Filling lithoklasse==0 values bottom-to-top (column-wise)...")
+    filled = fill_lithoklasse_numpy_fast(
+        df=points_in_rotterdam, z_col='z', litho_col='lithoklasse', delta=0.0005, method=method_filling,
+        )
+    
+    print("Lithoklasse filling complete.")
+
+    profiled = aggregate_to_same_class(filled)
+    
+    output_dir = saving_batches(profiled, dir_export)
     print(f"Data successfully saved in batches under {output_dir}")
 
 
@@ -308,16 +580,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run 3D vertical filling")
     
     parser.add_argument(
-        "-input_address", type=str, default="Depot Boijmans Van Beuningen",
-        help="Specify address to display."
-    )
-    
-    parser.add_argument(
         "-method", type=str, default="mean_round",
         help="Select method for computing replacement from neighbor values: mean_round (default) or mode."
     )
         
     args = parser.parse_args()
     main(args)
-    main(args)
-    main(args)
+
+
+
+
+
+
+
+
+
