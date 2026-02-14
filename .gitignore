@@ -11,3 +11,6 @@ env/
 *.webloc
 *.zip
 *.mp4
+
+my-env/
+input/
