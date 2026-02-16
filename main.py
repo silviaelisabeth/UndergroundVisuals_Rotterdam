@@ -19,6 +19,7 @@ from tqdm import tqdm
 import functions as ft
 
 dir_export = 'output/'
+dir_surface = 'input/maaiveld_dtm/'
 
 projection_rd_amersfoort = 'epsg:28992'
 projection_geocoordinates = 'epsg:4326'
@@ -488,13 +489,8 @@ def aggregate_to_same_class(filled):
         'lon', 'lat', 'z_top', 'z_bottom', 'lithoklasse_id', 'lithoklasse',
         *[f"{col}_mean" for col in likelihood_cols], 'estimated'
     ]
-    df_final = df_grouped[selected_columns]
+    return df_grouped[selected_columns]
     
-    profiled = df_final.groupby(['lon','lat']).apply(
-        lambda g: sorted(g.to_dict(orient='records'), key=lambda d: d['z_top'], reverse=True)
-    ).reset_index(name='data')
-    return profiled
-
 
 def saving_batches(profiled, dir_export):
     list_of_lists = profiled['data'].tolist()
@@ -533,13 +529,65 @@ def saving_batches(profiled, dir_export):
 
     batch_summary_dict = batch_summary.set_index('batchID').to_dict(orient='index')
 
-    batch_summary_file = os.path.join(output_dir, 'map_batch_bboxes.json')
+    batch_summary_file = os.path.join(output_dir, 'batch_index.json')
     with open(batch_summary_file, 'w') as f:
         json.dump(batch_summary_dict, f, indent=2)
 
     print(f"Batch bounding boxes saved as {batch_summary_file}")
     return output_dir
 
+
+def saving_batches_v2(df_merged, dir_export):
+    batch = {}
+    batch_index = 1
+    current_size = 0
+    mapping_rows = []
+
+    output_dir = dir_export + f"json_5MB_chunks_{datetime.now().date().isoformat()}/"
+    os.makedirs(output_dir, exist_ok=True)
+
+    layer_cols = [
+        "z_top", "z_bottom", "lithoklasse_id", "lithoklasse",
+        "kans_1_veen_mean", "kans_2_klei_mean", "kans_3_kleiig_zand_mean",
+        "kans_4_vervallen_mean", "kans_5_zand_fijn_mean", "kans_6_zand_matig_grof_mean",
+        "kans_7_zand_grof_mean", "kans_8_grind_mean", "kans_9_schelpen_mean"
+    ]
+    
+    for (lat, lon), group in df_merged.groupby(['lat', 'lon']):
+        surface_level = group['surface_level_m_NAP'].iloc[0]
+        layers = group[layer_cols].to_dict(orient='records')
+        
+        key = f"{lat},{lon},{surface_level}"
+        batch[key] = layers
+        
+        mapping_rows.append({
+            "lat": lat,
+            "lon": lon,
+            "surface_level": surface_level,
+            "batch_id": batch_index
+        })
+        
+        current_size += len(json.dumps({key: layers}))
+        
+        if current_size >= MAX_BYTES:
+            filename = output_dir + f"litho_batch_{batch_index}.json"
+            with open(filename, "w") as f:
+                json.dump(batch, f, indent=2)
+            print(f"Saved {filename} ({current_size / 1024 / 1024:.2f} MB)")
+
+            batch_index += 1
+            batch = {}
+            current_size = 0
+
+    if batch:
+        filename = output_dir + f"litho_batch_{batch_index}.json"
+        with open(filename, "w") as f:
+            json.dump(batch, f, indent=2)
+        print(f"Saved {filename} ({current_size / 1024 / 1024:.2f} MB)")
+
+    df_mapping = DataFrame(mapping_rows)
+    df_mapping.to_csv(output_dir + "batch_index.txt", index=False)
+    return output_dir
 
 # --------------------------------------------------------------------------
 # MAIN
@@ -564,12 +612,22 @@ def main(args):
     filled = fill_lithoklasse_numpy_fast(
         df=points_in_rotterdam, z_col='z', litho_col='lithoklasse', delta=0.0005, method=method_filling,
         )
-    
     print("Lithoklasse filling complete.")
 
-    profiled = aggregate_to_same_class(filled)
-    
-    output_dir = saving_batches(profiled, dir_export)
+    print('Aggregate to same class')
+    cropped = aggregate_to_same_class(filled)
+
+    print('Get surface layer information')
+    unique_pairs_coords_selected = ft.get_surface_layer_of_area(points_in_rotterdam, dir_surface)
+
+    df_merged = cropped.merge(
+        unique_pairs_coords_selected[['lat', 'lon', 'surface_level_m_NAP']],
+        on=['lat', 'lon'],
+        how='left'
+        )
+    df_merged.loc[df_merged['surface_level_m_NAP'].isna(), 'surface_level_m_NAP'] = 0
+
+    output_dir = saving_batches_v2(df_merged, dir_export)
     print(f"Data successfully saved in batches under {output_dir}")
 
 
@@ -586,12 +644,3 @@ if __name__ == "__main__":
         
     args = parser.parse_args()
     main(args)
-
-
-
-
-
-
-
-
-

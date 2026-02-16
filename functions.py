@@ -1,8 +1,12 @@
+from glob import glob
+
+import geopandas as gpd
 import matplotlib.pyplot as plt
+import rasterio
 import seaborn as sns
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from numpy import array
-from pandas import DataFrame, MultiIndex
+from numpy import array, float32, full, nan
+from pandas import DataFrame, MultiIndex, concat
 from pyproj import Transformer
 
 sns.set_style('white')
@@ -27,17 +31,19 @@ def find_closest_points_to_input(data, latitude, longitude, delta_lat=0.001, del
 
 
 def convert_rd_into_geocoordinates(data):
-    x_rd, y_rd, z = data.index.codes[0], data.index.codes[1], data.index.codes[2]
+    data_coords = data.copy()
+    
+    x_rd, y_rd, z = data_coords.index.codes[0], data_coords.index.codes[1], data_coords.index.codes[2]
 
-    x_vals = data.index.get_level_values(0).to_numpy()
-    y_vals = data.index.get_level_values(1).to_numpy()
-    z_vals = data.index.get_level_values(2).to_numpy()
+    x_vals = data_coords.index.get_level_values(0).to_numpy()
+    y_vals = data_coords.index.get_level_values(1).to_numpy()
+    z_vals = data_coords.index.get_level_values(2).to_numpy()
 
     transformer = Transformer.from_crs("epsg:28992", "epsg:4326", always_xy=True)
     lon, lat = transformer.transform(x_vals, y_vals)
 
-    data.index = MultiIndex.from_arrays([lon, lat, z_vals], names=['lon', 'lat', 'z'])
-    return data
+    data_coords.index = MultiIndex.from_arrays([lon, lat, z_vals], names=['lon', 'lat', 'z'])
+    return data_coords
 
 
 def get_unique_points(points_around_input):
@@ -258,3 +264,37 @@ def _plot_voxels_on_axis(ax, unique_points, layer_label, dx, dy):
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_zlabel("Depth")
+
+
+def get_surface_layer_of_area(df_unique_pairs, dir_surface):
+    unique_coordinates_index = df_unique_pairs[['lon', 'lat']].drop_duplicates().index
+    unique_pairs_selected = df_unique_pairs.loc[unique_coordinates_index]
+
+    unique_pairs_coords_selected = unique_pairs_selected[['lon', 'lat', 'geometry']]
+    unique_pairs_coords_selected = gpd.GeoDataFrame(unique_pairs_coords_selected, geometry="geometry")
+    unique_pairs_coords_selected = concat([
+        unique_pairs_coords_selected.lon, unique_pairs_coords_selected.lat, 
+        unique_pairs_coords_selected.geometry.x, unique_pairs_coords_selected.geometry.y
+        ], axis=1)
+
+    unique_pairs_coords_selected.columns = ['lon', 'lat', 'x_rd', 'y_rd']
+
+    
+    coords = list(zip(unique_pairs_coords_selected.x_rd, unique_pairs_coords_selected.y_rd))
+    elevation = full(len(coords), nan, dtype=float32)
+
+    files = glob(dir_surface + "/*.tif")
+
+    for f in files:
+        with rasterio.open(f) as src:
+            minx, miny, maxx, maxy = src.bounds
+            idxs = [i for i, (x, y) in enumerate(coords) if minx <= x <= maxx and miny <= y <= maxy]
+            if not idxs:
+                continue
+            tile_coords = [coords[i] for i in idxs]
+            vals = array([v[0] for v in src.sample(tile_coords)])
+            vals[vals == src.nodata] = nan
+            elevation[idxs] = vals
+
+    unique_pairs_coords_selected["surface_level_m_NAP"] = elevation
+    return unique_pairs_coords_selected
