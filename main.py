@@ -642,7 +642,7 @@ def main(args):
         on=['lat', 'lon'],
         how='left'
         )
-    df_merged.loc[df_merged['surface_level_m_NAP'].isna(), 'surface_level_m_NAP'] = 0
+    #df_merged.loc[df_merged['surface_level_m_NAP'].isna(), 'surface_level_m_NAP'] = 0
 
     output_dir = saving_batches_v2(df_merged, dir_export)
     print(f"Data successfully saved in batches under {output_dir}")
