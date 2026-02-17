@@ -550,7 +550,7 @@ def saving_batches_v2(df_merged, dir_export):
         "z_top", "z_bottom", "lithoklasse_id", "lithoklasse",
         "kans_1_veen_mean", "kans_2_klei_mean", "kans_3_kleiig_zand_mean",
         "kans_4_vervallen_mean", "kans_5_zand_fijn_mean", "kans_6_zand_matig_grof_mean",
-        "kans_7_zand_grof_mean", "kans_8_grind_mean", "kans_9_schelpen_mean"
+        "kans_7_zand_grof_mean", "kans_8_grind_mean", "kans_9_schelpen_mean", "estimated"
     ]
     
     for (lat, lon), group in df_merged.groupby(['lat', 'lon']):
@@ -585,8 +585,25 @@ def saving_batches_v2(df_merged, dir_export):
             json.dump(batch, f, indent=2)
         print(f"Saved {filename} ({current_size / 1024 / 1024:.2f} MB)")
 
-    df_mapping = DataFrame(mapping_rows)
-    df_mapping.to_csv(output_dir + "batch_index.txt", index=False)
+
+    batch_summary = DataFrame(mapping_rows).groupby('batch_id').agg({
+        'lon': ['min', 'max'],
+        'lat': ['min', 'max']
+    })
+
+    batch_summary.columns = ['minLon', 'maxLon', 'minLat', 'maxLat']
+    batch_summary = batch_summary.reset_index()
+    batch_summary = batch_summary.rename(columns={'batch_id': 'batchID'})
+
+    batch_summary_dict = batch_summary.set_index('batchID').to_dict(orient='index')
+    batch_summary_file = os.path.join(output_dir, 'batch_index.json')
+    with open(batch_summary_file, 'w') as f:
+        json.dump(batch_summary_dict, f, indent=2)
+
+    print(f"Batch bounding boxes saved as {batch_summary_file}")
+
+    #df_mapping = DataFrame(mapping_rows)
+    #df_mapping.to_csv(output_dir + "batch_index.txt", index=False)
     return output_dir
 
 # --------------------------------------------------------------------------
